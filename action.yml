@@ -1,6 +1,9 @@
 name: Set up cgo cross compilation
 description: Installs the C cross compiler of a Go target of Nginx UI and sets CC, CXX and CGO_ENABLED.
 author: nginxui
+branding:
+  icon: cpu
+  color: blue
 
 inputs:
   goos:
