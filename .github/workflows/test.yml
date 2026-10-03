@@ -1,0 +1,81 @@
+name: Test
+
+# Builds a program that links SQLite through cgo for every target Nginx UI
+# ships, and runs it where the runner can: natively, or under qemu.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }}
+    runs-on: ${{ matrix.goos == 'darwin' && 'macos-latest' || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64, run: native }
+          - { goos: linux, goarch: '386', run: native }
+          - { goos: linux, goarch: arm64, run: qemu-aarch64-static }
+          - { goos: linux, goarch: arm, goarm: '5', run: qemu-arm-static }
+          - { goos: linux, goarch: arm, goarm: '6', run: qemu-arm-static }
+          - { goos: linux, goarch: arm, goarm: '7', run: qemu-arm-static }
+          - { goos: linux, goarch: riscv64, run: qemu-riscv64-static }
+          - { goos: linux, goarch: loong64, run: qemu-loongarch64-static }
+          - { goos: linux, goarch: mips, run: qemu-mips-static }
+          - { goos: linux, goarch: mipsle, run: qemu-mipsel-static }
+          - { goos: linux, goarch: mips64, run: qemu-mips64-static }
+          - { goos: linux, goarch: mips64le, run: qemu-mips64el-static }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: '386' }
+          - { goos: windows, goarch: arm64 }
+          - { goos: darwin, goarch: arm64, run: native }
+          - { goos: darwin, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
+      - id: cgo
+        uses: ./
+        with:
+          goos: ${{ matrix.goos }}
+          goarch: ${{ matrix.goarch }}
+          goarm: ${{ matrix.goarm }}
+
+      - name: Build
+        working-directory: testdata
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          EXTLDFLAGS: ${{ steps.cgo.outputs.extldflags }}
+        run: |
+          go build -trimpath -ldflags "-s -w -extldflags '${EXTLDFLAGS}'" -o "${RUNNER_TEMP}/probe" .
+          file "${RUNNER_TEMP}/probe"
+
+      - name: Install qemu
+        if: startsWith(matrix.run, 'qemu-')
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+
+      - name: Run
+        if: matrix.run
+        env:
+          RUN: ${{ matrix.run }}
+        run: |
+          if [[ "${RUN}" == native ]]; then
+            "${RUNNER_TEMP}/probe"
+          else
+            "${RUN}" "${RUNNER_TEMP}/probe"
+          fi

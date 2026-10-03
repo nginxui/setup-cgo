@@ -1,0 +1,110 @@
+name: Set up cgo cross compilation
+description: Installs the C cross compiler of a Go target of Nginx UI and sets CC, CXX and CGO_ENABLED.
+author: nginxui
+
+inputs:
+  goos:
+    description: GOOS of the target, linux, windows or darwin.
+    required: true
+  goarch:
+    description: GOARCH of the target.
+    required: true
+  goarm:
+    description: GOARM of a linux/arm target, 5, 6 or 7. Go's default 7 when empty.
+    required: false
+    default: ''
+
+outputs:
+  cc:
+    description: The C compiler, also exported as CC.
+    value: ${{ steps.done.outputs.cc }}
+  cxx:
+    description: The C++ compiler, also exported as CXX.
+    value: ${{ steps.done.outputs.cxx }}
+  extldflags:
+    description: Flags for the external linker, -static on Linux, empty elsewhere. Pass them as -ldflags "-extldflags '...'".
+    value: ${{ steps.done.outputs.extldflags }}
+  triple:
+    description: The target triple of the toolchain.
+    value: ${{ steps.target.outputs.triple }}
+
+runs:
+  using: composite
+  steps:
+    - id: target
+      shell: bash
+      env:
+        GOOS: ${{ inputs.goos }}
+        GOARCH: ${{ inputs.goarch }}
+        GOARM: ${{ inputs.goarm }}
+      run: '"${GITHUB_ACTION_PATH}/target.sh"'
+
+    # The musl toolchains come from GitHub release assets that answer 5xx at
+    # times, so the download is tried three times with a growing pause.
+    - id: musl
+      if: steps.target.outputs.kind == 'linux'
+      continue-on-error: true
+      uses: nginxui/musl-cross-compilers@8f83e180fec1779fd14f7aa9834d83525187a317 # v1
+      with:
+        target: ${{ steps.target.outputs.triple }}
+        variant: ${{ steps.target.outputs.variant }}
+
+    - if: steps.target.outputs.kind == 'linux' && steps.musl.outcome == 'failure'
+      shell: bash
+      run: sleep 30
+
+    - id: musl_retry1
+      if: steps.target.outputs.kind == 'linux' && steps.musl.outcome == 'failure'
+      continue-on-error: true
+      uses: nginxui/musl-cross-compilers@8f83e180fec1779fd14f7aa9834d83525187a317 # v1
+      with:
+        target: ${{ steps.target.outputs.triple }}
+        variant: ${{ steps.target.outputs.variant }}
+
+    - if: steps.target.outputs.kind == 'linux' && steps.musl_retry1.outcome == 'failure'
+      shell: bash
+      run: sleep 90
+
+    - id: musl_retry2
+      if: steps.target.outputs.kind == 'linux' && steps.musl_retry1.outcome == 'failure'
+      uses: nginxui/musl-cross-compilers@8f83e180fec1779fd14f7aa9834d83525187a317 # v1
+      with:
+        target: ${{ steps.target.outputs.triple }}
+        variant: ${{ steps.target.outputs.variant }}
+
+    - id: windows
+      if: steps.target.outputs.kind == 'windows'
+      shell: bash
+      env:
+        TRIPLE: ${{ steps.target.outputs.triple }}
+      run: '"${GITHUB_ACTION_PATH}/windows.sh"'
+
+    - id: done
+      shell: bash
+      env:
+        KIND: ${{ steps.target.outputs.kind }}
+        TRIPLE: ${{ steps.target.outputs.triple }}
+        MUSL_PATH: ${{ steps.musl.outputs.path || steps.musl_retry1.outputs.path || steps.musl_retry2.outputs.path }}
+        WINDOWS_CC: ${{ steps.windows.outputs.cc }}
+        WINDOWS_CXX: ${{ steps.windows.outputs.cxx }}
+      run: |
+        set -euo pipefail
+        extldflags=""
+        case "${KIND}" in
+          linux)
+            test -n "${MUSL_PATH}"
+            echo "${MUSL_PATH}" >> "${GITHUB_PATH}"
+            cc="${TRIPLE}-gcc" cxx="${TRIPLE}-g++" extldflags="-static" ;;
+          windows) cc="${WINDOWS_CC}" cxx="${WINDOWS_CXX}" ;;
+          darwin) cc=clang cxx=clang++ ;;
+        esac
+        {
+          echo "CC=${cc}"
+          echo "CXX=${cxx}"
+          echo "CGO_ENABLED=1"
+        } >> "${GITHUB_ENV}"
+        {
+          echo "cc=${cc}"
+          echo "cxx=${cxx}"
+          echo "extldflags=${extldflags}"
+        } >> "${GITHUB_OUTPUT}"
